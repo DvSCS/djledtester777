@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Painel LED Sincronizado PRO</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@700,900&display=swap');
+        :root { --accent-color: #00f2ea; --bg-color: #000000; --card-color: #111111; --text-color: #ffffff; --host-color: #ff005d; }
+        body { margin: 0; font-family: 'Roboto', sans-serif; background-color: var(--bg-color); color: var(--text-color); display: flex; justify-content: center; align-items: center; height: 100vh; text-align: center; overflow: hidden; }
+        #setup { background: var(--card-color); padding: 20px 30px; border-radius: 10px; box-shadow: 0 0 60px rgba(0, 242, 234, 0.2); max-width: 95%; width: 400px; border: 2px solid var(--accent-color); z-index: 1000; }
+        .section { border-bottom: 1px solid #444; padding-bottom: 20px; margin-bottom: 20px; } .section:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        .section-title { font-size: 1.5em; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; margin: 0 0 15px 0; }
+        .solo-title { color: var(--accent-color); } .host-title { color: var(--host-color); }
+        .file-label { background-color: #333; color: var(--text-color); padding: 15px 30px; border-radius: 5px; cursor: pointer; display: block; margin: 10px 0; font-weight: bold; transition: background-color 0.2s; }
+        .file-label.active { background-color: var(--accent-color); box-shadow: 0 0 15px var(--accent-color); }
+        .host-label.active { background-color: var(--host-color); box-shadow: 0 0 15px var(--host-color); }
+        input[type="file"] { display: none; }
+        #session-info { margin-top: 15px; display: none; }
+        #session-code { font-family: monospace; font-size: 1.1em; padding: 10px; background: #000; border: 1px solid var(--host-color); color: var(--host-color); word-wrap: break-word; cursor: pointer; }
+        #preset-input { width: calc(100% - 24px); background: #000; border: 2px solid #fff; color: #fff; padding: 12px; font-size: 1em; text-align: center; margin-top: 10px; }
+        .action-button { background-color: #555; color: #999; border: none; padding: 18px 20px; font-size: 1.3em; font-weight: 900; border-radius: 5px; cursor: not-allowed; margin-top: 15px; width: 100%; text-transform: uppercase; transition: all 0.2s; }
+        .action-button:not(:disabled) { background-color: var(--text-color); color: var(--bg-color); cursor: pointer; }
+        .action-button:not(:disabled):hover { transform: scale(1.03); box-shadow: 0 0 25px rgba(255, 255, 255, 0.5); }
+        #show-canvas { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        .status { margin-top: 10px; color: var(--accent-color); height: 20px; font-family: sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="setup">
+        <!-- SOLO MODE -->
+        <div class="section">
+            <h2 class="section-title solo-title">Modo Solo</h2>
+            <input type="file" id="solo-music-input" accept="audio/*"><label for="solo-music-input" class="file-label" id="solo-music-label">Carregar Música</label>
+            <input type="file" id="solo-cover-input" accept="image/*"><label for="solo-cover-input" class="file-label" id="solo-cover-label">Carregar Capa</label>
+            <button id="solo-btn" class="action-button" disabled>Iniciar Painel Solo</button>
+        </div>
+        <!-- SYNC MODE -->
+        <div class="section">
+            <h2 class="section-title host-title">Modo Sincronizado</h2>
+            <input type="file" id="host-music-input" accept="audio/*"><label for="host-music-input" class="file-label host-label" id="host-music-label">1. Carregar Música (Host)</label>
+            <input type="file" id="host-cover-input" accept="image/*"><label for="host-cover-input" class="file-label host-label" id="host-cover-label">2. Carregar Capa (Host)</label>
+            <button id="host-btn" class="action-button" disabled>Criar Sessão</button>
+            <div id="session-info"><p>Código da Sessão (clique para copiar):</p><div id="session-code"></div></div>
+            <hr style="border-color: #444; margin: 25px 0;">
+            <input type="text" id="preset-input" placeholder="Cole o Código da Sessão aqui">
+            <button id="join-btn" class="action-button">Juntar-se (Cliente)</button>
+            <div class="status" id="status-text"></div>
+        </div>
+    </div>
+    <canvas id="show-canvas"></canvas>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/color-thief/2.3.0/color-thief.umd.js"></script>
+    <script>
+        // --- UI Elements & State ---
+        const setupDiv = document.getElementById('setup');
+        const canvas = document.getElementById('show-canvas'), ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status-text');
+        // Solo UI
+        const soloMusicInput = document.getElementById('solo-music-input'), soloMusicLabel = document.getElementById('solo-music-label');
+        const soloCoverInput = document.getElementById('solo-cover-input'), soloCoverLabel = document.getElementById('solo-cover-label');
+        const soloBtn = document.getElementById('solo-btn');
+        // Host UI
+        const hostMusicInput = document.getElementById('host-music-input'), hostMusicLabel = document.getElementById('host-music-label');
+        const hostCoverInput = document.getElementById('host-cover-input'), hostCoverLabel = document.getElementById('host-cover-label');
+        const hostBtn = document.getElementById('host-btn');
+        const sessionInfo = document.getElementById('session-info'), sessionCodeEl = document.getElementById('session-code');
+        // Client UI
+        const presetInput = document.getElementById('preset-input');
+        const joinBtn = document.getElementById('join-btn');
+        // App State
+        let audioContext, analyser, source, audio, dataArray;
+        let colors = [], syncRole = 'SOLO', sessionId = null, sessionUrl = null;
+        const GRID_X = 24, GRID_Y = 16;
+        let ledWidth, ledHeight, ledMatrix = [];
+
+        // --- UI Event Listeners ---
+        soloMusicInput.addEventListener('change', () => { soloMusicLabel.classList.add('active'); checkSoloButton(); });
+        soloCoverInput.addEventListener('change', () => { soloCoverLabel.classList.add('active'); checkSoloButton(); });
+        hostMusicInput.addEventListener('change', () => { hostMusicLabel.classList.add('active'); checkHostButton(); });
+        hostCoverInput.addEventListener('change', () => { hostCoverLabel.classList.add('active'); checkHostButton(); });
+        
+        function checkSoloButton() { soloBtn.disabled = !(soloMusicInput.files[0] && soloCoverInput.files[0]); }
+        function checkHostButton() { hostBtn.disabled = !(hostMusicInput.files[0] && hostCoverInput.files[0]); }
+
+        soloBtn.addEventListener('click', async () => {
+            syncRole = 'SOLO';
+            colors = (await getPaletteFromImage(soloCoverInput.files[0])).map(c => [c[0], c[1], c[2]]);
+            init(soloMusicInput.files[0]);
+        });
+        
+        hostBtn.addEventListener('click', async () => {
+            syncRole = 'HOST';
+            statusText.textContent = "Analisando cores...";
+            colors = (await getPaletteFromImage(hostCoverInput.files[0])).map(c => [c[0], c[1], c[2]]);
+            if (await createSession()) {
+                sessionCodeEl.textContent = sessionId;
+                sessionInfo.style.display = 'block';
+                init(hostMusicInput.files[0]);
+            }
+        });
+
+        joinBtn.addEventListener('click', async () => {
+            syncRole = 'CLIENT';
+            if (await joinSession(presetInput.value)) {
+                init(null);
+            }
+        });
+
+        sessionCodeEl.addEventListener('click', () => {
+            navigator.clipboard.writeText(sessionCodeEl.textContent);
+            statusText.textContent = "Código copiado!";
+            setTimeout(() => { statusText.textContent = ''; }, 2000);
+        });
+
+        // --- Session Management (Cloud Communication) ---
+        const API_ENDPOINT = 'https://api.jsonblob.com/api/jsonBlob';
+
+        async function createSession() {
+            statusText.textContent = "Criando sessão na nuvem...";
+            try {
+                const response = await fetch(API_ENDPOINT, { method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ colors: colors, event: { type: 'IDLE', ts: Date.now() } })
+                });
+                if (!response.ok) throw new Error('Falha na API');
+                sessionUrl = response.headers.get('Location');
+                sessionId = sessionUrl.split('/').pop();
+                statusText.textContent = "Sessão criada! Compartilhe o código.";
+                return true;
+            } catch (error) { statusText.textContent = "Erro de rede. Tente novamente."; return false; }
+        }
+
+        async function joinSession(code) {
+            statusText.textContent = "Conectando à sessão...";
+            if (!code || code.length < 10) { statusText.textContent = "Código inválido."; return false; }
+            try {
+                sessionUrl = `${API_ENDPOINT}/${code.trim()}`;
+                const response = await fetch(sessionUrl);
+                if (!response.ok) throw new Error("Sessão não encontrada.");
+                const data = await response.json();
+                colors = data.colors;
+                statusText.textContent = "Conectado! Aguardando o Host...";
+                return true;
+            } catch (error) { statusText.textContent = `Erro: ${error.message}`; return false; }
+        }
+
+        function updateSession(eventData) {
+            if (!sessionUrl) return;
+            fetch(sessionUrl, { method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ colors: colors, event: eventData })
+            }).catch(console.error);
+        }
+
+        // --- Initialization ---
+        function init(musicFile) {
+            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            document.documentElement.requestFullscreen?.();
+            setupDiv.style.display = 'none';
+            canvas.style.display = 'block';
+
+            if (musicFile) {
+                audio = new Audio(URL.createObjectURL(musicFile));
+                source = audioContext.createMediaElementSource(audio);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 512;
+                source.connect(analyser);
+                analyser.connect(audioContext.destination);
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                audio.play();
+            }
+            resizeCanvas();
+            createLedMatrix();
+            renderLoop();
+        }
+        
+        // --- Core Logic & Rendering ---
+        let energyHistory = new Array(64).fill(0);
+        let beatDebounce = { bass: 0, snare: 0 };
+        
+        function hostAudioAnalysis() {
+            analyser.getByteFrequencyData(dataArray);
+            const now = Date.now();
+            const bass = getEnergy(1, 7), snare = getEnergy(15, 35);
+            const historyAvg = energyHistory.reduce((a,b) => a+b, 0) / energyHistory.length;
+
+            if (bass > historyAvg * 1.3 && now - beatDebounce.bass > 180) {
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                triggerBassBloom(color);
+                if (syncRole === 'HOST') updateSession({ type: 'BASS', color: color, ts: now });
+                beatDebounce.bass = now;
+            }
+            if (snare > historyAvg * 1.25 && now - beatDebounce.snare > 150) {
+                triggerStrobeFlash();
+                if (syncRole === 'HOST') updateSession({ type: 'SNARE', ts: now });
+                beatDebounce.snare = now;
+            }
+            
+            const totalEnergy = getEnergy(1, 100);
+            ledMatrix.forEach(r => r.forEach(l => l.ambient = Math.min(1, totalEnergy / 200)));
+            energyHistory.push(totalEnergy); energyHistory.shift();
+        }
+
+        let lastEventTs = 0;
+        async function clientEventPolling() {
+            try {
+                const response = await fetch(sessionUrl);
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.event && data.event.ts > lastEventTs) {
+                    lastEventTs = data.event.ts;
+                    const { type, color } = data.event;
+                    if (type === 'BASS') triggerBassBloom(color);
+                    if (type === 'SNARE') triggerStrobeFlash();
+                }
+            } catch(e) { /* Ignore fetch errors */ }
+        }
+
+        function renderLoop() {
+            if (syncRole === 'HOST' || syncRole === 'SOLO') hostAudioAnalysis();
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.shadowBlur = ledWidth * 1.2;
+            
+            for (let y = 0; y < GRID_Y; y++) {
+                for (let x = 0; x < GRID_X; x++) {
+                    const led = ledMatrix[y][x];
+                    led.update();
+                    const color = led.getFinalColor();
+                    ctx.fillStyle = color; ctx.shadowColor = color;
+                    ctx.fillRect(x * ledWidth, y * ledHeight, ledWidth - 2, ledHeight - 2);
+                }
+            }
+            requestAnimationFrame(renderLoop);
+        }
+        setInterval(() => { if (syncRole === 'CLIENT') clientEventPolling(); }, 200);
+
+        // --- Utilities & Helpers ---
+        function getPaletteFromImage(file) { return new Promise(resolve => { const img = new Image(); img.src = URL.createObjectURL(file); img.onload = () => { const ct = new ColorThief(); resolve(ct.getPalette(img, 8)); }; }); }
+        function getEnergy(low, high) { let sum=0; for (let i=low; i<=high; i++) sum+=dataArray[i]; return sum/(high-low+1); }
+        function triggerBassBloom(color) { const cX=GRID_X/2,cY=GRID_Y/2; ledMatrix.forEach((r,y)=>r.forEach((l,x)=>{ const d=Math.sqrt(Math.pow(x-cX,2)+Math.pow(y-cY,2)); l.injectLight(color,Math.max(0,1-(d/(GRID_X*0.7)))*1.5); })); }
+        function triggerStrobeFlash() { ledMatrix.forEach(r=>r.forEach(l=>l.injectLight([255,255,255],1.2))); }
+        function createLedMatrix() { ledMatrix=[]; for(let y=0;y<GRID_Y;y++){ let r=[]; for(let x=0;x<GRID_X;x++)r.push(new Led()); ledMatrix.push(r); } }
+        function resizeCanvas() { canvas.width=window.innerWidth; canvas.height=window.innerHeight; ledWidth=canvas.width/GRID_X; ledHeight=canvas.height/GRID_Y; }
+        class Led { constructor(){this.r=0;this.g=0;this.b=0;this.ambient=0;} injectLight(c,i){this.r=Math.min(255,this.r+c[0]*i);this.g=Math.min(255,this.g+c[1]*i);this.b=Math.min(255,this.b+c[2]*i);} update(){this.r*=.90;this.g*=.90;this.b*=.90;} getFinalColor(){const aC=colors.length>0?colors[0]:[50,50,50];const fR=Math.min(255,this.r+aC[0]*this.ambient*0.3);const fG=Math.min(255,this.g+aC[1]*this.ambient*0.3);const fB=Math.min(255,this.b+aC[2]*this.ambient*0.3);return`rgb(${fR},${fG},${fB})`;}}
+        window.addEventListener('resize', resizeCanvas);
+        document.body.addEventListener('click', () => { if (audioContext && audioContext.state==='suspended') audioContext.resume(); }, { once: true });
+    </script>
+</body>
+</html>
